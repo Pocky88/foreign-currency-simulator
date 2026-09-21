@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>外貨積立・過去実績バックテストシミュレーター</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background-color: #f1f5f9; color: #0f172a; margin: 0; padding: 16px; }
+    .container { max-width: 600px; margin: 0 auto; }
+    .card { background: white; border-radius: 16px; padding: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 16px; }
+    h2 { font-size: 1.25rem; margin-top: 0; color: #1e293b; border-bottom: 2px solid #3b82f6; padding-bottom: 8px; }
+    .form-group { margin-bottom: 16px; }
+    label { display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 6px; color: #475569; }
+    select, input[type="number"] { width: 100%; padding: 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 1rem; background: #fff; }
+    .badge-info { background: #e0f2fe; color: #0369a1; padding: 8px 12px; border-radius: 8px; font-size: 0.825rem; margin-bottom: 16px; line-height: 1.4; }
+    .result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px; }
+    .result-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; text-align: center; }
+    .result-card .title { font-size: 0.75rem; color: #64748b; margin-bottom: 4px; }
+    .result-card .val { font-size: 1.05rem; font-weight: bold; color: #0f172a; }
+    .result-card.highlight { background: #eff6ff; border-color: #bfdbfe; grid-column: span 2; }
+    .result-card.highlight .val { font-size: 1.4rem; color: #2563eb; }
+    .positive { color: #16a34a !important; }
+    .negative { color: #dc2626 !important; }
+    canvas { max-width: 100%; margin-top: 16px; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <div class="card">
+    <h2>外貨積立バックテスト (2016-2026)</h2>
+    <p style="font-size: 0.85rem; color: #64748b;">過去10年間の実際の為替レートと平均スワップ金利に基づき、利息再投資（複利）の運用成果を計算します。</p>
+
+    <div class="form-group">
+      <label>対象通貨を選択</label>
+      <select id="currency" onchange="calculate()">
+        <option value="USD">米ドル (USD/JPY)</option>
+        <option value="AUD">豪ドル (AUD/JPY)</option>
+        <option value="NZD">NZドル (NZD/JPY)</option>
+        <option value="CAD">カナダドル (CAD/JPY)</option>
+        <option value="ZAR" selected>南アフリカランド (ZAR/JPY)</option>
+        <option value="MXN">メキシコペソ (MXN/JPY)</option>
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label>毎月の積立額 (円)</label>
+      <input type="number" id="monthly" value="30000" step="5000" oninput="calculate()">
+    </div>
+
+    <div class="badge-info" id="currencyInfo">
+      <!-- 通貨情報がJavaScriptで入ります -->
+    </div>
+
+    <div class="result-grid">
+      <div class="result-card highlight">
+        <div class="title">現在評価額 (2026年時点)</div>
+        <div class="val" id="resTotal">0 円</div>
+      </div>
+      <div class="result-card">
+        <div class="title">積立元本合計</div>
+        <div class="val" id="resPrincipal">0 円</div>
+      </div>
+      <div class="result-card">
+        <div class="title">トータル損益</div>
+        <div class="val" id="resProfit">0 円</div>
+      </div>
+      <div class="result-card">
+        <div class="title">内：累計スワップ収益</div>
+        <div class="val positive" id="resSwap">0 円</div>
+      </div>
+      <div class="result-card">
+        <div class="title">内：為替損益効果</div>
+        <div class="val" id="resFx">0 円</div>
+      </div>
+    </div>
+
+    <canvas id="chart"></canvas>
+  </div>
+</div>
+
+<script>
+  // 過去10年 (2016-2026) のヒストリカルデータ推移 (各年平均レート & 年間平均スワップ利回り%)
+  const historicalData = {
+    USD: { name: "米ドル", rates: [108.8, 112.1, 110.4, 109.0, 106.8, 109.8, 131.5, 140.5, 151.2, 148.5, 155.0], avgSwap: 2.8, desc: "最も安定した右肩上がり。為替差益とスワップの両方で高い成果。" },
+    AUD: { name: "豪ドル", rates: [81.2, 86.4, 82.5, 75.3, 73.2, 82.1, 90.5, 93.2, 99.8, 97.2, 111.8], avgSwap: 3.2, desc: "コロナショック等で急落する場面もあったが、安値購入効果（ドルコスト平均法）が大きく効いた。" },
+    NZD: { name: "NZドル", rates: [76.5, 80.2, 76.1, 70.4, 68.5, 77.2, 84.1, 87.3, 92.1, 90.2, 89.8], avgSwap: 3.5, desc: "豪ドルに似た動きをしつつ、安定したスワップ金利を提供。" },
+    CAD: { name: "カナダドル", rates: [82.1, 87.2, 84.3, 82.1, 80.2, 88.4, 100.2, 104.1, 110.5, 108.2, 112.0], avgSwap: 2.8, desc: "米国経済との好相性＋原油高が追い風となり、堅調に資産拡大。" },
+    ZAR: { name: "南アフリカランド", rates: [7.3, 8.3, 8.1, 7.5, 6.5, 7.4, 7.8, 7.6, 8.2, 8.4, 9.6], avgSwap: 6.8, desc: "高金利通貨。長期のレンジ推移だが、毎月の高スワップ再投資と積立により元本を大きく上回る。" },
+    MXN: { name: "メキシコペソ", rates: [5.8, 6.0, 5.7, 5.6, 5.0, 5.4, 6.5, 7.8, 8.5, 8.2, 8.8], avgSwap: 7.5, desc: "高スワップに加えて近年のペソ高が重なり、過去10年で非常に高いパフォーマンスを記録。" }
+  };
+
+  let myChart = null;
+
+  function calculate() {
+    const code = document.getElementById('currency').value;
+    const monthly = parseFloat(document.getElementById('monthly').value) || 0;
+    const item = historicalData[code];
+
+    document.getElementById('currencyInfo').innerHTML = 
+      `<b>${item.name}の過去10年傾向:</b><br>${item.desc} (平均スワップ年率想定: 約${item.avgSwap}%)`;
+
+    let totalForeignUnits = 0; // 保有外貨数量
+    let totalPrincipal = 0;    // 投入した日本円の合計
+    let totalSwapYen = 0;      // 獲得したスワップ利息（円換算累積）
+
+    const labels = [];
+    const principalHist = [];
+    const totalValHist = [];
+
+    const startYear = 2016;
+    const monthlySwapRate = (item.avgSwap / 100) / 12;
+
+    for (let i = 0; i < item.rates.length; i++) {
+      const year = startYear + i;
+      const rate = item.rates[i];
+
+      // 1年（12ヶ月）分の積立とスワップ複利計算
+      for (let m = 0; m < 12; m++) {
+        // 毎月の買付外貨数
+        const boughtUnits = monthly / rate;
+        totalForeignUnits += boughtUnits;
+        totalPrincipal += monthly;
+
+        // 毎月のスワップ獲得（外貨で付与され再投資）
+        const swapGainUnits = totalForeignUnits * monthlySwapRate;
+        totalForeignUnits += swapGainUnits;
+        totalSwapYen += swapGainUnits * rate; // 目安記録用
+      }
+
+      // 年末時点の評価額（円）
+      const currentEval = totalForeignUnits * rate;
+
+      labels.push(year + '年');
+      principalHist.push(totalPrincipal);
+      totalValHist.push(Math.round(currentEval));
+    }
+
+    const finalEval = totalValHist[totalValHist.length - 1];
+    const totalProfit = finalEval - totalPrincipal;
+    const currentRate = item.rates[item.rates.length - 1];
+    
+    // スワップによる貢献額（概算）と為替変動差額の分解
+    const swapContributionYen = Math.round(totalSwapYen);
+    const fxContributionYen = totalProfit - swapContributionYen;
+
+    // 画面表示更新
+    document.getElementById('resTotal').innerText = finalEval.toLocaleString() + ' 円';
+    document.getElementById('resPrincipal').innerText = totalPrincipal.toLocaleString() + ' 円';
+    
+    const profEl = document.getElementById('resProfit');
+    profEl.innerText = (totalProfit >= 0 ? '+' : '') + totalProfit.toLocaleString() + ' 円';
+    profEl.className = 'val ' + (totalProfit >= 0 ? 'positive' : 'negative');
+
+    document.getElementById('resSwap').innerText = '+' + swapContributionYen.toLocaleString() + ' 円';
+    
+    const fxEl = document.getElementById('resFx');
+    fxEl.innerText = (fxContributionYen >= 0 ? '+' : '') + fxContributionYen.toLocaleString() + ' 円';
+    fxEl.className = 'val ' + (fxContributionYen >= 0 ? 'positive' : 'negative');
+
+    updateChart(labels, principalHist, totalValHist);
+  }
+
+  function updateChart(labels, principalHist, totalValHist) {
+    const ctx = document.getElementById('chart').getContext('2d');
+    if (myChart) myChart.destroy();
+
+    myChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            label: '資産評価額 (実績)',
+            data: totalValHist,
+            borderColor: '#2563eb',
+            backgroundColor: 'rgba(37, 99, 235, 0.1)',
+            fill: true,
+            tension: 0.2
+          },
+          {
+            label: '積立元本',
+            data: principalHist,
+            borderColor: '#94a3b8',
+            borderDash: [5, 5],
+            fill: false,
+            tension: 0
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { position: 'bottom' } },
+        scales: {
+          y: {
+            ticks: {
+              callback: function(val) { return (val / 10000) + '万円'; }
+            }
+          }
+        }
+      }
+    });
+  }
+
+  calculate();
+</script>
+
+</body>
+</html>
